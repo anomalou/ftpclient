@@ -1,7 +1,4 @@
 using System.Net;
-using System.Runtime.InteropServices.ComTypes;
-using System.Threading;
-using System.Linq;
 using System.Text;
 using System.Collections.Generic;
 using System.IO;
@@ -16,35 +13,44 @@ namespace Lab5{
             Pass,
             Success
         }
+        enum ConnectionMode{
+            Active,
+            Passive
+        }
         private Socket socket;
-        private NetworkStream msgStream;
-        private Socket downloadSocket;
-        private NetworkStream fileStream;
+        private NetworkStream cmdStream;
+        private Socket dataSocket;
+        private NetworkStream dataStream;
         private LoginState loginState;
+        private ConnectionMode connectionMode;
+        private string activeAddress;
 
         private string username;
 
         private bool work;
 
+        private string downloadFolder;
 
         public FTPClient(){}
 
         public bool Start(string hostname, int port){
             socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            downloadSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             try{
                 socket.Connect(hostname, port);
-                msgStream = new NetworkStream(socket);
+                cmdStream = new NetworkStream(socket);
             }catch(Exception ex){
+                Console.WriteLine(ex);
                 Console.WriteLine("Cannot connect to the server!");
                 return false;
             }
 
-            msgStream.ReadTimeout = 1;
+            downloadFolder = "./Downloads";
+            Directory.CreateDirectory(downloadFolder);
 
             Console.WriteLine(Read());
 
             loginState = LoginState.User;
+            connectionMode = ConnectionMode.Passive;
 
             return true;
         }
@@ -81,73 +87,67 @@ namespace Lab5{
                     string cmd = Console.ReadLine();
                     string[] cmdParts = cmd.Split(' ');
                     if(cmdParts.Length > 0){
-                        cmdParts[0] = cmdParts[0].ToUpperInvariant();
+                        cmdParts[0] = cmdParts[0].ToLowerInvariant();
                         switch(cmdParts[0]){
-                            case "CWD":
-                                if(cmdParts.Length > 1)
-                                    CWD(cmdParts[1]);
-                                else
-                                    Console.WriteLine("Too few arguments");
+                            case "cd":
+                                ChangeDirectory(cmdParts[1]);
                             break;
-                            case "REIN":
-                                REIN();
+                            case "ls":
+                                switch(connectionMode){
+                                    case ConnectionMode.Active:
+                                        ActiveMode(activeAddress);
+                                    break;
+                                    case ConnectionMode.Passive:
+                                        PassiveMode();
+                                    break;
+                                }
+                                ShowDirectory();
                             break;
-                            case "QUIT":
-                                QUIT();
+                            case "pwd":
+                                ShowWorkingDirectory();
+                            break;
+                            case "wget":
+                                switch(connectionMode){
+                                    case ConnectionMode.Active:
+                                        ActiveMode(activeAddress);
+                                    break;
+                                    case ConnectionMode.Passive:
+                                        PassiveMode();
+                                    break;
+                                }
+                                Download(cmdParts[1]);
+                            break;
+                            case "store":
+                                switch(connectionMode){
+                                    case ConnectionMode.Active:
+                                        ActiveMode(activeAddress);
+                                    break;
+                                    case ConnectionMode.Passive:
+                                        PassiveMode();
+                                    break;
+                                }
+                                StoreFile(cmdParts[1]);
+                            break;
+                            case "exit":
+                                Quit();
                                 work = false;
                             break;
-                            case "PORT":
-                                if(cmdParts.Length > 1)
-                                    PORT(cmdParts[1]);
-                                else
-                                    Console.WriteLine("Too few arguments");
+                            case "clear":
+                                Console.Clear();
                             break;
-                            case "PASV":
-                                PASV();
+                            case "reset":
+                                Reinitialization();
                             break;
-                            case "TYPE":
-                                if(cmdParts.Length > 1)
-                                    TYPE(cmdParts[1]);
-                                else
-                                    Console.WriteLine("Too few arguments");
+                            case "setmode":
+                                SetConnectionMode(cmdParts[1]);
                             break;
-                            case "STRU":
-                                if(cmdParts.Length > 1)
-                                    STRU(cmdParts[1]);
-                                else
-                                    Console.WriteLine("Too few arguments");
+                            case "rename":
+                                if(cmdParts.Length > 2){
+                                    RenameFile($"{cmdParts[1]}/{cmdParts[2]}");
+                                }
                             break;
-                            case "MODE":
-                                if(cmdParts.Length > 1)
-                                    MODE(cmdParts[1]);
-                                else
-                                    Console.WriteLine("Too few arguments");
-                            break;
-                            case "RETR":
-                                if(cmdParts.Length > 1)
-                                    RETR(cmdParts[1]);
-                                else
-                                    Console.WriteLine("Too few arguments");
-                            break;
-                            case "STOR":
-                            break;
-                            case "RNAME":
-                            break;
-                            case "ABOR":
-                            break;
-                            case "DELE":
-                            break;
-                            case "MKD":
-                            break;
-                            case "RMD":
-                            break;
-                            case "LIST":
-                            break;
-                            case "CUSTOM":
-                                if(cmdParts.Length > 1)
-                                    Custom(cmdParts[1]);
-                                else
-                                    Console.WriteLine("To few arguments");
+                            default:
+                                Console.WriteLine("I don't know that command!");
                             break;
                         }
                     }else{
@@ -157,33 +157,79 @@ namespace Lab5{
             }
         }
 
-        private void Custom(string cmd){
+        private void CustomCmd(string cmd){
             Send(cmd);
             Console.WriteLine(Read());
         }
 
-        private void CWD(string args){
+        private void ChangeDirectory(string args){
             Send($"CWD {args}");
             Console.WriteLine(Read());
         }
 
-        private void QUIT(){
+        private void ShowWorkingDirectory(){
+            Send($"PWD");
+            Console.WriteLine(Read());
+        }
+
+        private void Quit(){
             Send($"QUIT");
             Console.WriteLine(Read());
         }
 
-        private void REIN(){
+        private void Reinitialization(){
             Send($"REIN");
             Console.WriteLine(Read());
         }
 
-        private void PORT(string args){
-            Send($"PORT {args}");
+        private void Abort(){
+            Send($"ABOR");
             Console.WriteLine(Read());
         }
 
-        private void PASV(){
+        private void SetConnectionMode(string args){
+            string[] parms = args.Split(' '); 
+            switch(parms[0]){
+                case "active":
+                    if(parms.Length > 1){
+                        activeAddress = parms[1];
+                        connectionMode = ConnectionMode.Active;
+                    }else{
+                        Console.WriteLine("Too few arguments");
+                    }
+                break;
+                case "passive":
+                    connectionMode = ConnectionMode.Passive;
+                break;
+            }
+            Console.WriteLine($"Connection setted up to {parms[0]} mode");
+        }
+
+        private void ActiveMode(string args){
+            Send($"PORT {args}");
+            Socket listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            string[] address = args.Split(',');
+            byte[] addressBytes = new byte[4];
+            byte[] portBytes = new byte[2];
+            addressBytes[0] = byte.Parse(address[0]);
+            addressBytes[1] = byte.Parse(address[1]);
+            addressBytes[2] = byte.Parse(address[2]);
+            addressBytes[3] = byte.Parse(address[3]);
+            portBytes[0] = byte.Parse(address[4]);
+            portBytes[1] = byte.Parse(address[5]);
+            IPAddress ip = new IPAddress(addressBytes);
+            int port = (int)(portBytes[0] * 256 + portBytes[1]);
+            IPEndPoint endPoint = new IPEndPoint(ip, port);
+            listenSocket.Bind(endPoint);
+            listenSocket.Listen(1);
+            dataSocket = listenSocket.Accept();
+            dataStream = new NetworkStream(dataSocket);
+            Console.WriteLine(Read());
+        }
+
+        private void PassiveMode(){
             Send($"PASV");
+            dataSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             string line = Read();
             string address = line.Substring(27);
             address = address.Replace("(", "");
@@ -199,43 +245,117 @@ namespace Lab5{
             portBytes[1] = byte.Parse(octets[5]);
             IPAddress ip = new IPAddress(addressBytes);
             int port = (int)(portBytes[0] * 256 + portBytes[1]);
-            while(!downloadSocket.Connected){
+            while(!dataSocket.Connected){
                 try{
-                    downloadSocket.Connect(ip, port);
+                    dataSocket.Connect(ip, port);
                 }catch(Exception ex){}
             }
-            fileStream = new NetworkStream(downloadSocket);
-            fileStream.ReadTimeout = 1;
+            dataStream = new NetworkStream(dataSocket);
             Console.WriteLine(line);
         }
 
-        private void TYPE(string args){
+        private void SetType(string args){
             Send($"TYPE {args}");
             Console.WriteLine(Read());
         }
 
-        private void STRU(string args){
+        private void SetStruct(string args){
             Send($"STRU {args}");
             Console.WriteLine(Read());
         }
 
-        private void MODE(string args){
+        private void SetMode(string args){
             Send($"MODE {args}");
             Console.WriteLine(Read());
         }
 
-        private void RETR(string args){
+        private void DeleteFile(string args){
+            Send($"DELE {args}");
+            Console.WriteLine(Read());
+        }
+
+        private void CreateDirectory(string args){
+            Send($"MKD {args}");
+            Console.WriteLine(Read());
+        }
+
+        private void DeleteDirectory(string args){
+            Send($"RMD {args}");
+            Console.WriteLine(Read());
+        }
+
+        private void Download(string args){
             Send($"RETR {args}");
-            int count = 0;
-            List<byte> file = new List<byte>();
-            byte[] buffer = new byte[4096];
+            Console.WriteLine(Read());
+            List<byte> data = new List<byte>();
+            byte[] buffer = new byte[1024];
+            Array.Clear(buffer, 0, buffer.Length);
             try{
-                while((count = fileStream.Read(buffer, 0, buffer.Length)) > 0){
-                    file.AddRange(buffer);
+                do{
+                    dataStream.Read(buffer, 0, buffer.Length);
+                    data.AddRange(buffer);
                     Array.Clear(buffer, 0, buffer.Length);
-                }
-            }catch(Exception ex){}
-            File.WriteAllBytes(args, file.ToArray());
+                }while(dataStream.DataAvailable);
+            }catch(Exception ex){
+                Console.WriteLine(ex);
+            }
+            File.WriteAllBytes($"{downloadFolder}/{args}", data.ToArray());
+            dataStream.Close();
+            dataSocket.Close();
+            string line = Read();
+            if(line.StartsWith('5'))
+                File.Delete(args);
+            Console.WriteLine(line);
+        }
+
+        private void ShowDirectory(){
+            Send($"LIST");
+            Console.WriteLine(Read());
+            List<byte> data = new List<byte>();
+            byte[] buffer = new byte[1024];
+            Array.Clear(buffer, 0, buffer.Length);
+            try{
+                do{
+                    dataStream.Read(buffer, 0, buffer.Length);
+                    data.AddRange(buffer);
+                    Array.Clear(buffer, 0, buffer.Length);
+                }while(dataStream.DataAvailable);
+            }catch(Exception ex){
+                Console.WriteLine(ex);
+            }
+            dataStream.Close();
+            dataSocket.Close();
+            Console.WriteLine(Read());
+            Console.WriteLine(Encoding.UTF8.GetString(data.ToArray()));
+
+        }
+
+        private void StoreFile(string args){
+            int separator = 0;
+            if(args.Contains('/'))
+                separator = args.LastIndexOf('/') + 1;
+            else if(args.Contains('\\'))
+                separator = args.LastIndexOf('\\') + 1;
+            string fileName = args.Substring(separator);
+            byte[] buffer = File.ReadAllBytes(args);
+            Send($"STOR {fileName}");
+            Console.WriteLine(Read());
+            try{
+                dataStream.Write(buffer);
+                dataStream.Flush();
+            }catch(Exception ex){
+                Console.WriteLine(ex);
+            }
+            dataStream.Close();
+            dataSocket.Close();
+            Console.WriteLine(Read());
+        }
+
+        private void RenameFile(string args){
+            string[] names = args.Split('/');
+            Send($"RNFR {names[0]}");
+            Console.WriteLine(Read());
+            Send($"RNTO {names[1]}");
             Console.WriteLine(Read());
         }
 
@@ -252,21 +372,20 @@ namespace Lab5{
             if(socket.Connected){
                 command = command + "\r\n";
                 byte[] message = Encoding.UTF8.GetBytes(command);
-                msgStream.Write(message, 0, message.Length);
-                msgStream.Flush();
+                cmdStream.Write(message, 0, message.Length);
+                cmdStream.Flush();
             }
         }
 
         public string Read(){
             if(socket.Connected){
-                int count = 0;
                 List<byte> msg = new List<byte>();
-                byte[] buffer = new byte[4096];
+                byte[] buffer = new byte[1024];
                 try{
-                    while((count = msgStream.Read(buffer, 0, buffer.Length)) > 0){
+                    do{
+                        cmdStream.Read(buffer, 0, buffer.Length);
                         msg.AddRange(buffer);
-                        Array.Clear(buffer, 0, buffer.Length);
-                    }
+                    }while(cmdStream.DataAvailable);
                 }catch(Exception ex){}
                 return Encoding.UTF8.GetString(msg.ToArray());
             }
